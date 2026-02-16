@@ -180,45 +180,23 @@ export default {
 
 // 新增域名解析函数
 async function resolveDomain(domain) {
-  domain = domain.includes(':') ? domain.split(':')[0] : domain;
+  domain = domain.split(':')[0]; // 移除端口
   try {
-    // 并发请求IPv4和IPv6记录
-    const [ipv4Response, ipv6Response] = await Promise.all([
-      fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
-        headers: { 'Accept': 'application/dns-json' }
-      }),
-      fetch(`https://1.1.1.1/dns-query?name=${domain}&type=AAAA`, {
-        headers: { 'Accept': 'application/dns-json' }
-      })
-    ]);
-
     const [ipv4Data, ipv6Data] = await Promise.all([
-      ipv4Response.json(),
-      ipv6Response.json()
+      fetch(`https://cloudflare-dns.com/dns-query?name=${domain}&type=A`, {
+        headers: { 'Accept': 'application/dns-json' }
+      }).then(r => r.json()),
+      fetch(`https://cloudflare-dns.com/dns-query?name=${domain}&type=AAAA`, {
+        headers: { 'Accept': 'application/dns-json' }
+      }).then(r => r.json())
     ]);
 
-    const ips = [];
+    const ips = [
+      ...(ipv4Data.Answer?.filter(r => r.type === 1).map(r => r.data) || []),
+      ...(ipv6Data.Answer?.filter(r => r.type === 28).map(r => `[${r.data}]`) || [])
+    ];
 
-    // 添加IPv4地址
-    if (ipv4Data.Answer) {
-      const ipv4Addresses = ipv4Data.Answer
-        .filter(record => record.type === 1) // A记录
-        .map(record => record.data);
-      ips.push(...ipv4Addresses);
-    }
-
-    // 添加IPv6地址
-    if (ipv6Data.Answer) {
-      const ipv6Addresses = ipv6Data.Answer
-        .filter(record => record.type === 28) // AAAA记录
-        .map(record => `[${record.data}]`); // IPv6地址用方括号包围
-      ips.push(...ipv6Addresses);
-    }
-
-    if (ips.length === 0) {
-      throw new Error('No A or AAAA records found');
-    }
-
+    if (!ips.length) throw new Error('No A or AAAA records found');
     return ips;
   } catch (error) {
     throw new Error(`DNS resolution failed: ${error.message}`);
@@ -1268,7 +1246,7 @@ async function HTML(hostname, 网站图标) {
       
       <h3 style="color: var(--text-primary); margin: 24px 0 16px;">💡 使用示例</h3>
       <div class="code-block">
-curl "https://${hostname}/check?proxyip=1.2.3.4:443"
+curl "https://cf.090227.xyz/check?proxyip=1.2.3.4:443"
       </div>
 
       <h3 style="color: var(--text-primary); margin: 24px 0 16px;">🔗 响应Json格式</h3>
@@ -1450,16 +1428,33 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443"
     function preprocessInput(input) {
       if (!input) return input;
       
-      // 去除首尾空格
-      let processed = input.trim();
-      
-      // 检查是否还有空格
-      if (processed.includes(' ')) {
-        // 只保留第一个空格前的内容
-        processed = processed.split(' ')[0];
+      try {
+        // 去除首尾空格
+        let processed = input.trim();
+        
+        // 检查是否还有空格
+        if (processed.includes(' ')) {
+          // 只保留第一个空格前的内容
+          processed = processed.split(' ')[0];
+        }
+        
+        // 提取域名/IP:端口（自动处理URL）
+        // 首先使用正则表达式移除协议部分
+        let noProtocol = processed.replace(/^[a-zA-Z][a-zA-Z0-9+.\\-]*:\\/\\//,'');
+        
+        // 如果没有匹配到协议，再检查是否以//开头
+        if (noProtocol === processed && processed.startsWith('//')) {
+          noProtocol = processed.substring(2);
+        }
+        
+        // 移除路径、查询参数和片段部分（只保留第一个/之前的部分）
+        let extracted = noProtocol.split(/[\\/\\?#]/)[0];
+        
+        return extracted;
+      } catch (e) {
+        console.error('preprocessInput出错:', e);
+        return input.trim();
       }
-      
-      return processed;
     }
     
     // 主检测函数
@@ -1553,7 +1548,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443"
     
     // 检查单个IP
     async function checkSingleIP(proxyip, resultDiv) {
-      const response = await fetch(\`./check?proxyip=\${encodeURIComponent(proxyip)}\`);
+      const response = await fetch(\`https://cf.090227.xyz/check?proxyip=\${encodeURIComponent(proxyip)}\`);
       const data = await response.json();
       
       if (data.success) {
@@ -1797,7 +1792,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443"
     // 检查IP状态
     async function checkIPStatus(ip) {
       try {
-        const response = await fetch(\`./check?proxyip=\${encodeURIComponent(ip)}\`);
+        const response = await fetch(\`https://cf.090227.xyz/check?proxyip=\${encodeURIComponent(ip)}\`);
         const data = await response.json();
         return data;
       } catch (error) {
