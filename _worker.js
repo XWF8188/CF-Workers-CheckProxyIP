@@ -2731,6 +2731,7 @@ function generateHTML() {
 						</select>
 					</label>
 					<button class="primary-btn proxy-search-btn" id="fofaBtn" type="button">FOFA</button>
+					<button class="primary-btn proxy-search-btn" id="shodanBtn" type="button">Shodan</button>
 				</div>
 			</section>
 		</main>
@@ -2783,6 +2784,7 @@ function generateHTML() {
 		const customRegionField = document.getElementById('customRegionField');
 		const customRegionInput = document.getElementById('customRegionInput');
 		const fofaBtn = document.getElementById('fofaBtn');
+		const shodanBtn = document.getElementById('shodanBtn');
 		const THEME_STORAGE_KEY = 'cf_proxy_theme';
 		const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
 		const BASE_MAP_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -4051,6 +4053,38 @@ function generateHTML() {
 			window.open(url, '_blank', 'noopener');
 		}
 
+		function openShodan() {
+			const region = getSelectedFOFARegion();
+			const port = proxyPortSelect ? proxyPortSelect.value : '';
+
+			if (region === null) return;
+
+			if (!region) {
+				showToast('请选择有效地区', 'error');
+				return;
+			}
+
+			let queryParts = [];
+			if (port === '443') {
+				queryParts.push('port:443');
+			} else if (port === 'nonstandard') {
+				queryParts.push('-port:80 -port:8080 -port:8880 -port:2052 -port:2082 -port:2086 -port:2095 -port:443 -port:2053 -port:2083 -port:2087 -port:2096 -port:8443');
+			} else {
+				showToast('请选择有效端口', 'error');
+				return;
+			}
+
+			queryParts.push('country:' + region.toUpperCase());
+			queryParts.push('"cloudflare"');
+			queryParts.push('"forbidden"');
+			queryParts.push('-asn:13335');
+			queryParts.push('-asn:209242');
+
+			const query = queryParts.join(' ');
+			const url = 'https://www.shodan.io/search?query=' + encodeURIComponent(query);
+			window.open(url, '_blank', 'noopener');
+		}
+
 		async function handleExport(format) {
 			const records = getExportableRecords();
 			if (!records.length) {
@@ -4618,6 +4652,10 @@ function generateHTML() {
 
 		if (fofaBtn) {
 			fofaBtn.addEventListener('click', openFOFA);
+		}
+
+		if (shodanBtn) {
+			shodanBtn.addEventListener('click', openShodan);
 		}
 
 		checkBtn.addEventListener('click', async function () {
