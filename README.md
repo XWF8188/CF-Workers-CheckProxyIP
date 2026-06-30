@@ -2,13 +2,13 @@
 
 ![CF-Workers-CheckProxyIP](./demo.png)
 
-一个基于 Cloudflare Workers 的 ProxyIP 检测前端工具。
+一个基于 Cloudflare Workers 的 ProxyIP 检测工具。
 
 当前版本的职责很明确：
 
 - 提供一个可直接使用的 Web 界面
 - 解析单个或批量输入的 IP / IPv6 / 域名
-- 调用外部检测接口校验候选 ProxyIP 是否可用
+- 通过 Worker 内置 `/check` 路由校验候选 ProxyIP 是否可用
 - 展示出口 IP、地理位置、ASN 信息和地图线路
 - 在本地保存最近使用过的单条输入历史
 
@@ -16,18 +16,28 @@
 
 这个仓库现在是一个单文件 Worker 应用，核心文件只有 [`_worker.js`](./_worker.js)。
 
-它本身不直接在 Worker 内完成 ProxyIP 连通性探测，而是负责：
+它把页面、解析和 ProxyIP 连通性探测都放在同一个 Worker 中，负责：
 
 1. 渲染检测页面
 2. 解析输入目标
-3. 代理 Cloudflare 机房位置数据
-4. 在浏览器中调用外部检测接口并展示结果
+3. 通过内置 `/check` 路由发起 TCP / TLS 探测
+4. 代理 Cloudflare 机房位置数据
+5. 在浏览器中展示检测结果
 
 这意味着：
 
 - 你部署本项目后，可以立即得到一个可用的检测页面
-- 页面中的“检测”动作依赖外部接口 `https://api.090227.xyz/check`
-- 如果你希望完全自托管检测链路，需要把前端中的检测接口地址替换成你自己的服务
+- 页面中的“检测”动作会直接请求同源 `/check`
+- 检测逻辑已从 `demo/Check_Proxy.js` 移植进 `_worker.js`
+- `/check` 会访问 `ipv4.090227.xyz` 和 `ipv6.090227.xyz` 作为出口探针，用于判断候选 ProxyIP 的 IPv4 / IPv6 出口能力
+
+## 环境变量
+
+当前源码只读取以下环境变量：
+
+| 变量名 | 说明 | 示例 | 必需 |
+| --- | --- | --- | --- |
+| `BEIAN` | 自定义页面页脚 HTML。未设置时使用默认页脚，包含项目链接、访问人数和维护者链接。 | `© 2026 Example.com · ICP 备案号` | 否 |
 
 ## 功能特性
 
@@ -35,7 +45,7 @@
 
 - 支持单条输入
 - 支持多行批量输入
-- 批量模式下会在前端跳过直接 IP 解析，对整理后的输入先去重，只解析域名，并按每批最多 20 个域名提交解析
+- 批量模式下会在前端跳过直接 IP 解析，对整理后的输入先去重，只解析域名，并按每批最多 15 个域名提交解析
 - 所有候选目标汇总后会以 32 并发发起检测
 
 ### 2. 多种目标格式
@@ -48,18 +58,18 @@
 | IPv4 + 端口 | `8.223.63.150:8443` | 使用指定端口 |
 | IPv6 | `2606:4700::1` | 会在内部标准化为 `[2606:4700::1]:443` |
 | IPv6 + 端口 | `[2606:4700::1]:8443` | 推荐使用方括号格式 |
-| 域名 | `proxyip.example.com` | 自动解析 `A` / `AAAA` 记录 |
+| 域名 | `proxyip.example.com` | 自动并发解析 `TXT` / `A` / `AAAA` 记录 |
 | 域名 + 端口 | `proxyip.example.com:8443` | 所有解析结果沿用该端口 |
 
 ### 3. 特殊解析能力
 
-项目当前还内置了两个特殊规则：
+项目当前内置以下解析规则：
 
 - 域名中包含 `.tp端口.` 时，会强制覆盖端口号
   - 例如：`abc.tp8443.example.com`
-- 域名中包含 `.william.` 时，会优先查询 `TXT` 记录
+- 所有域名都会并发查询 `TXT` / `A` / `AAAA` 记录
   - `TXT` 记录会按逗号拆分为多个候选目标
-  - 适合维护一组预定义 ProxyIP 列表
+  - `A` / `AAAA` 记录会沿用输入端口生成候选目标
 
 ### 4. 结果可视化
 
@@ -84,12 +94,13 @@
   ├─ 访问 Worker 首页 /
   ├─ 调用 /resolve 或 /resolve-batch 解析输入目标
   ├─ 调用 /locations 获取 Cloudflare 机房位置
-  └─ 直接请求外部检测接口 https://api.090227.xyz/check
+  └─ 调用同源 /check 检测候选 ProxyIP
 
 Cloudflare Worker
   ├─ 返回 HTML / CSS / JS 页面
   ├─ 解析 IPv4 / IPv6 / 域名
   ├─ 通过 DoH 查询 A / AAAA / TXT
+  ├─ 通过 cloudflare:sockets 连接候选 ProxyIP 并执行 TLS 探测
   └─ 代理 Cloudflare locations 数据
 ```
 
@@ -97,7 +108,7 @@ Cloudflare Worker
 
 ```text
 .
-├─ _worker.js   # Worker 入口，包含页面、路由和前端脚本
+├─ _worker.js   # Worker 入口，包含页面、解析路由、/check 检测逻辑和前端脚本
 ├─ README.md    # 项目说明
 ├─ demo.png     # 页面示意图
 └─ LICENSE      # MIT 许可证
@@ -153,8 +164,8 @@ Cloudflare Worker
 1. 解析输入中的主机和端口，默认端口为 `443`
 2. 如果命中 `.tp端口.` 规则，则覆盖端口
 3. 如果输入本身就是 IPv4 / IPv6，则直接返回
-4. 如果命中 `.william.` 规则，则优先查询 `TXT`
-5. 否则查询 `A` 和 `AAAA` 记录
+4. 并发查询 `TXT` / `A` / `AAAA` 记录
+5. 合并 `TXT` 拆分结果以及 `A` / `AAAA` 解析结果
 6. 如果没有得到结果，返回错误信息
 
 #### 错误示例
@@ -167,7 +178,7 @@ Cloudflare Worker
 
 ### `POST /resolve-batch`
 
-批量解析域名使用的接口。单次最多提交 20 个目标，避免 Cloudflare Workers 免费套餐的子请求数量上限。
+批量解析域名使用的接口。单次最多提交 15 个目标，避免 Cloudflare Workers 免费套餐的子请求数量上限。
 
 #### 请求示例
 
@@ -199,6 +210,72 @@ Cloudflare Worker
   ]
 }
 ```
+
+### `GET /check?proxyip=...`
+
+检测候选 ProxyIP 是否可用。前端检测按钮现在调用的就是这个同源接口。
+
+#### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `proxyip` | string | 是 | 要检测的候选目标，格式通常为 `host:port`、`IPv4:port` 或 `[IPv6]:port` |
+| `timeoutMs` | number | 否 | 单个 TCP / TLS / HTTP 阶段的超时时间，默认 `9999` |
+| `readLimit` | number | 否 | 读取探针响应的最大字节数，默认 `65536` |
+
+也可以使用 `POST /check` 提交 JSON：
+
+```json
+{
+  "proxyip": "203.0.113.10:443"
+}
+```
+
+批量检测时也支持：
+
+```json
+{
+  "proxyips": [
+    "203.0.113.10:443",
+    "[2001:db8::10]:443"
+  ]
+}
+```
+
+#### 返回示例
+
+```json
+{
+  "candidate": "203.0.113.10:443",
+  "success": true,
+  "proxyIP": "203.0.113.10",
+  "portRemote": 443,
+  "inferred_stack": "ipv4_only",
+  "supports_ipv4": true,
+  "supports_ipv6": false,
+  "dual_stack": false,
+  "responseTime": 215,
+  "colo": "HKG",
+  "timeStamp": "2026-05-13T11:00:00.000Z",
+  "probe_results": {
+    "ipv4": {
+      "ok": true,
+      "exit": {
+        "ip": "198.51.100.20",
+        "ipType": "ipv4",
+        "colo": "HKG",
+        "asn": "13335",
+        "asOrganization": "Cloudflare",
+        "country": "Hong Kong",
+        "city": "Hong Kong",
+        "loc": "22.3193,114.1694"
+      }
+    }
+  }
+}
+```
+
+`/check` 内部会分别访问 `ipv4.090227.xyz` 和 `ipv6.090227.xyz`，通过探针返回的出口 IP 判断候选目标是否可用，以及它支持 IPv4、IPv6 还是双栈。
 
 ### `GET /locations`
 
@@ -256,7 +333,7 @@ https://your-worker.example.workers.dev/8.223.63.150:443
 - IPv4 / IPv6 会先在浏览器本地识别和归一化，不会提交给解析接口
 - 整理后的输入目标会先按原始顺序去重
 - 只有域名目标会调用 `/resolve-batch`
-- 域名会按每批最多 20 个提交；单批 3 秒未响应会重试，连续 3 次失败后放弃该批
+- 域名会按每批最多 15 个提交；单批 3 秒未响应会重试，连续 3 次失败后放弃该批
 - 解析返回后的最终候选目标会再按 `IP:port` 去重
 - 所有候选目标汇总后会以 32 并发发起检测
 
@@ -272,11 +349,11 @@ https://your-worker.example.workers.dev/8.223.63.150:443
 
 ## 外部依赖
 
-当前项目依赖多个外部服务。部署前最好先了解清楚：
+当前项目仍会访问一些外部资源和探针目标。部署前最好先了解清楚：
 
 | 依赖 | 用途 | 当前地址 |
 | --- | --- | --- |
-| 外部检测接口 | 检查 ProxyIP 是否可用 | `https://api.090227.xyz/check` |
+| `/check` 探针目标 | 判断 ProxyIP 出口 IPv4 / IPv6 能力 | `https://ipv4.090227.xyz/` / `https://ipv6.090227.xyz/` |
 | Cloudflare DoH | 解析 `A` / `AAAA` / `TXT` | `https://cloudflare-dns.com/dns-query` |
 | Cloudflare Locations | 获取机房经纬度 | `https://speed.cloudflare.com/locations` |
 | Leaflet | 地图组件 | `https://unpkg.com/leaflet@1.9.4` |
@@ -284,15 +361,15 @@ https://your-worker.example.workers.dev/8.223.63.150:443
 | 国旗图片 | 出口国家旗帜 | `https://ipdata.co/flags/...` |
 | Google Fonts | 页面字体 | `https://fonts.googleapis.com` |
 
-## 关于外部检测接口
+## 关于 `/check` 检测接口
 
-前端真正执行检测时，调用的是：
+前端真正执行检测时，调用的是同源接口：
 
 ```text
-https://api.090227.xyz/check?proxyip=<target>
+/check?proxyip=<target>
 ```
 
-页面当前主要使用它返回的这些字段：
+这个接口的实现已经内置在 [`_worker.js`](./_worker.js) 中，主要使用 `cloudflare:sockets` 连接候选 ProxyIP，再通过固定探针目标判断出口能力。页面当前主要使用它返回的这些字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -321,7 +398,7 @@ https://api.090227.xyz/check?proxyip=<target>
 - `city`
 - `loc`
 
-如果你准备替换成自己的检测服务，至少需要兼容上述字段，或者同步修改前端的 `checkIP()` 和结果渲染逻辑。
+如果你准备改造 `/check` 或替换成自己的检测服务，至少需要兼容上述字段，或者同步修改前端的 `checkIP()` 和结果渲染逻辑。
 
 ## 部署方式
 
@@ -350,15 +427,15 @@ https://api.090227.xyz/check?proxyip=<target>
 
 如果你准备基于当前项目继续开发，最常见的改动点如下：
 
-### 1. 替换检测接口
+### 1. 调整检测接口或探针目标
 
-当前检测请求写在前端函数 `checkIP()` 中，地址为：
+当前前端函数 `checkIP()` 请求同源接口：
 
 ```js
-https://api.090227.xyz/check?proxyip=
+/check?proxyip=
 ```
 
-如果你有自己的后端服务，优先改这里。
+如果你想替换为自己的后端服务，可以改这里；如果只是想换出口探针目标，优先调整 `_worker.js` 中的 `PROBE_TARGETS`。
 
 ### 2. 替换 DNS 解析服务
 
@@ -378,10 +455,11 @@ https://cloudflare-dns.com/dns-query
 
 基于当前代码实现，下面这些点需要特别注意：
 
-- 本项目不是“纯本地自包含”检测器，检测结果依赖外部接口可用性
+- `/check` 使用 `cloudflare:sockets`，需要部署到支持 TCP sockets 的 Cloudflare Workers 运行时
 - `/resolve` 只负责解析候选目标，不负责真正的网络可用性验证
+- `/check` 检测过程依赖 `ipv4.090227.xyz` 和 `ipv6.090227.xyz` 探针目标可用
 - 如果第三方地图、字体、旗帜资源被阻断，页面部分视觉元素可能无法正常显示
-- 批量检测时会对候选目标以最多 32 个并发请求执行检测，目标很多时仍可能触发外部接口限流
+- 批量检测时会对候选目标以最多 32 个并发请求执行检测，目标很多时仍可能触发 Worker 运行时、子请求或网络资源限制
 - 当前仓库没有内置鉴权、配额控制和管理后台
 
 ## 适用场景
@@ -395,13 +473,14 @@ https://cloudflare-dns.com/dns-query
 
 如果你是从旧版本文档迁移过来的，下面几点已经和当前代码不一致：
 
-- 当前仓库没有实现自己的 `/check` Worker 路由
+- “检测依赖外部接口”的说法已经不适用
+- 当前仓库已经实现自己的 `/check` Worker 路由
 - 当前仓库没有使用 `TOKEN`、`URL302`、`URL`、`ICO` 等环境变量
-- 当前部署重点是“检测前端页面 + 目标解析”，不是“全功能后端检测 API”
+- 当前部署重点是“检测前端页面 + 目标解析 + 内置 `/check` 检测 API”
 
-## Acknowledgements
+## 开源代码引用
 
-部分开源代码思路与实现参考自 [@Alexandre_Kojeve](https://t.me/Enkelte_notif/822)。
+部分开源代码思路与实现参考自 [ToiCF/CF-Workers-CheckProxyIP](https://github.com/ToiCF/CF-Workers-CheckProxyIP)
 
 ## License
 
